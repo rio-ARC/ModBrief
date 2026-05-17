@@ -48,6 +48,6 @@
   },
   "scripts": {
     "dev": "vite build --watch",
-    "build": "vite build && npx esbuild src/server/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/server/server/index.js --external:@devvit/* --external:zlib --external:util --external:buffer"
+    "build": "vite build && npx esbuild src/server/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/server/server/index.js --external:@devvit/protos --external:@devvit/protos/*"
   }
 }

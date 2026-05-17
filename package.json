@@ -7,7 +7,7 @@
     "dev": "vite build --watch",
     "build": "vite build && npm run build:server",
     "build:client": "vite build",
-    "build:server": "npx esbuild src/server/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/server/server/index.js --external:@devvit/* --external:zlib --external:util --external:buffer",
+    "build:server": "npx esbuild src/server/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/server/server/index.js --external:@devvit/protos --external:@devvit/protos/*",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "typecheck:client": "tsc --noEmit",
     "typecheck:server": "tsc -p tsconfig.server.json --noEmit"

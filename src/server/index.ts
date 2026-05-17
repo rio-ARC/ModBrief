@@ -13,6 +13,8 @@
  *   POST /api/actions/ban-user            ← WebView action
  */
 
+import { createServer } from '@devvit/server';
+import { getServerPort } from '@devvit/shared-types/server/get-server-port.js';
 import { Hono } from 'hono';
 import { reddit, context } from '@devvit/web/server';
 import { aggregateContext } from './contextAggregator.js';
@@ -391,3 +393,51 @@ app.post('/api/actions/ban-user', async (c) => {
 });
 
 export default app;
+
+// ---------------------------------------------------------------------------
+// Server bootstrap — bridges Node.js HTTP → Hono → Devvit runtime
+// ---------------------------------------------------------------------------
+
+const server = createServer(async (req, res) => {
+  const url = `http://localhost${req.url ?? '/'}`;
+  const method = req.method ?? 'GET';
+
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value !== undefined) {
+      if (Array.isArray(value)) {
+        value.forEach((v) => headers.append(key, v));
+      } else {
+        headers.set(key, value);
+      }
+    }
+  }
+
+  let body: Buffer | null = null;
+  if (method !== 'GET' && method !== 'HEAD') {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(chunk as Buffer);
+    }
+    if (chunks.length > 0) body = Buffer.concat(chunks);
+  }
+
+  const webReq = new Request(url, {
+    method,
+    headers,
+    body: body ?? undefined,
+  });
+
+  const webRes = await app.fetch(webReq);
+
+  res.statusCode = webRes.status;
+  webRes.headers.forEach((value, key) => res.setHeader(key, value));
+
+  const responseBody = await webRes.arrayBuffer();
+  res.end(Buffer.from(responseBody));
+});
+
+server.listen(getServerPort(), () => {
+  console.log(`ContextLens server listening on port ${getServerPort()}`);
+});
+
