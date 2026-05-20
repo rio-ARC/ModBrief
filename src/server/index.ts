@@ -422,19 +422,29 @@ const server = createServer(async (req, res) => {
     if (chunks.length > 0) body = Buffer.concat(chunks);
   }
 
+  console.log(`ContextLens server: received request ${method} ${url}`);
+
   const webReq = new Request(url, {
     method,
     headers,
     body: body ?? undefined,
   });
 
-  const webRes = await app.fetch(webReq);
+  try {
+    const webRes = await app.fetch(webReq);
 
-  res.statusCode = webRes.status;
-  webRes.headers.forEach((value, key) => res.setHeader(key, value));
+    res.statusCode = webRes.status;
+    webRes.headers.forEach((value, key) => res.setHeader(key, value));
 
-  const responseBody = await webRes.arrayBuffer();
-  res.end(Buffer.from(responseBody));
+    const responseBody = await webRes.arrayBuffer();
+    res.end(Buffer.from(responseBody));
+    console.log(`ContextLens server: responded with status ${webRes.status}`);
+  } catch (error) {
+    console.error('ContextLens server: error handling request', error);
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+  }
 });
 
 server.listen(getServerPort(), () => {
