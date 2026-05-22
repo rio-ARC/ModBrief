@@ -1,38 +1,27 @@
 interface EmptyStateProps {
-  type: 'clean' | 'private' | 'error' | 'no-user';
-  message?: string;
+  reason: 'private' | 'new_account' | 'no_data';
 }
 
-const configs = {
-  clean: {
-    icon: '✓',
-    title: 'No concerns found',
-    body: 'This user has a clean record in this subreddit.',
-  },
-  private: {
-    icon: '🔒',
-    title: 'Private profile',
-    body: "This user's profile is private. Only local subreddit history is available.",
-  },
-  error: {
-    icon: '⚠',
-    title: 'Something went wrong',
-    body: 'Could not load context. Try again in a moment.',
-  },
-  'no-user': {
-    icon: '?',
-    title: 'User not found',
-    body: 'No Reddit account was found with this username.',
-  },
+const messages: Record<EmptyStateProps['reason'], string> = {
+  private: 'This user’s profile is private.',
+  new_account: 'This account is very new and has no history.',
+  no_data: 'No context data is available for this user.',
 };
 
-export default function EmptyState({ type, message }: EmptyStateProps) {
-  const cfg = configs[type];
+export default function EmptyState({ reason }: EmptyStateProps) {
   return (
-    <div className="state-shell" role="status">
-      <span className="state-icon">{cfg.icon}</span>
-      <p className="state-title">{cfg.title}</p>
-      <p className="state-body">{message ?? cfg.body}</p>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px',
+        textAlign: 'center',
+        color: '#8b949e',
+      }}
+    >
+      <p style={{ fontSize: '1rem', fontWeight: 500 }}>{messages[reason]}</p>
     </div>
   );
 }

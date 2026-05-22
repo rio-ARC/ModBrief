@@ -16,9 +16,9 @@
 import { createServer } from '@devvit/server';
 import { getServerPort } from '@devvit/shared-types/server/get-server-port.js';
 import { Hono } from 'hono';
-import { reddit, context } from '@devvit/web/server';
+import { reddit, context, redis } from '@devvit/web/server';
 import { aggregateContext } from './contextAggregator.js';
-import { getCached, setCached, isOnboarded, markOnboarded } from './kvCache.js';
+import { getCached, setCached } from './kvCache.js';
 import { scoreSignals } from './signalScorer.js';
 import { generateNarrative } from './narrativeEngine.js';
 import type {
@@ -89,28 +89,21 @@ async function buildContextResponse(
 // ---------------------------------------------------------------------------
 
 app.post('/internal/menu/view-context', async (c) => {
-  const input = await c.req.json<MenuItemRequest>();
-
   const subredditName = context.subredditName ?? '';
-  const postId   = input.postId ?? context.postId;
-  const commentId = input.commentId ?? context.commentId;
-
-  // Onboarding: first-run welcome message
-  const onboarded = await isOnboarded();
-  if (!onboarded) {
-    await markOnboarded();
-    return c.json<UiResponse>({
+  const onboarded = await redis.get('contextlens:onboarded:' + subredditName);
+  if (onboarded === null || onboarded === undefined) {
+    await redis.set('contextlens:onboarded:' + subredditName, 'true');
+    return c.json<any>({
       showForm: {
         name: 'contextForm',
         form: {
           title: 'Welcome to ContextLens',
-          acceptLabel: 'Got it',
-          cancelLabel: 'Close',
+          acceptLabel: 'Got it — show me the context',
           fields: [
             {
               name: 'info',
-              type: 'string',
-              label: 'ContextLens is now installed. Right-click any post or comment and select "View user context" to see a 30-second summary of any user.',
+              type: 'paragraph',
+              label: "ContextLens gives you instant moderation context for any user.\nHow to use:\n1. Right-click any post or comment → View user context\n2. Read the 2-sentence summary to understand the user's history\n3. Add a mod note or open the full dashboard if needed\nThat's it. This message won't appear again.",
               defaultValue: '',
             },
           ],
@@ -118,6 +111,10 @@ app.post('/internal/menu/view-context', async (c) => {
       },
     });
   }
+
+  const input = await c.req.json<MenuItemRequest>();
+  const postId   = input.postId ?? context.postId;
+  const commentId = input.commentId ?? context.commentId;
 
   // Resolve the author username
   let author: { username: string; contentId: string } | null = null;
@@ -133,7 +130,7 @@ app.post('/internal/menu/view-context', async (c) => {
     });
   }
 
-  const { username, contentId } = author;
+  const { username } = author;
 
   // Fetch context (may use cache)
   let response: ContextResponse;
@@ -161,7 +158,7 @@ app.post('/internal/menu/view-context', async (c) => {
 
   const accountLine = `Account: ${payload.accountAgeDays}d old · ${payload.totalKarma.toLocaleString()} karma · ${payload.recentCommentCount} comments / ${payload.recentPostCount} posts (30d)`;
 
-  return c.json<UiResponse>({
+  return c.json<any>({
     showForm: {
       name: 'contextForm',
       form: {
@@ -188,28 +185,50 @@ app.post('/internal/menu/view-context', async (c) => {
             defaultValue: '',
           },
           {
-            name: 'username',
-            type: 'string',
-            label: 'Username (do not edit)',
-            defaultValue: username,
-          },
-          {
-            name: 'contentId',
-            type: 'string',
-            label: 'Content ID (do not edit)',
-            defaultValue: contentId,
-          },
-          {
             name: 'note',
             type: 'string',
             label: 'Mod note (optional — fill in to add note on submit)',
             defaultValue: '',
+          },
+          {
+            name: 'openDashboard',
+            type: 'boolean',
+            label: 'Open Full Dashboard on submit',
           },
         ],
       },
     },
   });
 });
+
+// Helper: get or create dashboard post URL
+async function getOrCreateDashboardPostUrl(subredditName: string): Promise<string> {
+  const cacheKey = `contextlens:dashboard_post:${subredditName}`;
+  let postId = await redis.get(cacheKey);
+
+  if (postId) {
+    try {
+      const post = await reddit.getPostById(postId as `t3_${string}`);
+      if (post) {
+        const permalink = post.permalink ?? `/r/${subredditName}/comments/${post.id.replace('t3_', '')}`;
+        return `https://www.reddit.com${permalink}`;
+      }
+    } catch (err) {
+      console.warn(`ContextLens: failed to fetch cached dashboard post ${postId}, will recreate`, err);
+    }
+  }
+
+  // Submit new custom post
+  const post = await reddit.submitCustomPost({
+    subredditName,
+    title: 'ContextLens Dashboard',
+    entry: 'default',
+  });
+
+  await redis.set(cacheKey, post.id);
+  const permalink = post.permalink ?? `/r/${subredditName}/comments/${post.id.replace('t3_', '')}`;
+  return `https://www.reddit.com${permalink}`;
+}
 
 // ---------------------------------------------------------------------------
 // POST /internal/form/context-submit
@@ -218,18 +237,21 @@ app.post('/internal/menu/view-context', async (c) => {
 
 app.post('/internal/form/context-submit', async (c) => {
   const body = await c.req.json<{
-    username?: string;
     note?: string;
-    contentId?: string;
+    openDashboard?: boolean;
   }>();
 
-  const { username, note } = body;
+  const { note, openDashboard } = body;
   const subredditName = context.subredditName ?? '';
+
+  const resolved = await resolveAuthor(context.postId, context.commentId);
+  const username = resolved?.username;
 
   if (!username) {
     return c.json<UiResponse>({ showToast: 'Missing username.' });
   }
 
+  let modNoteAdded = false;
   if (note && note.trim()) {
     try {
       await reddit.addModNote({
@@ -237,11 +259,34 @@ app.post('/internal/form/context-submit', async (c) => {
         user: username,
         note: note.trim(),
       });
-      return c.json<UiResponse>({ showToast: `Mod note added for u/${username}.` });
+      modNoteAdded = true;
     } catch (err) {
       console.error('ContextLens: addModNote failed', err);
-      return c.json<UiResponse>({ showToast: 'Failed to add mod note.' });
     }
+  }
+
+  if (openDashboard) {
+    try {
+      const dashboardUrl = await getOrCreateDashboardPostUrl(subredditName);
+      const url = `${dashboardUrl}?username=${encodeURIComponent(username)}&subreddit=${encodeURIComponent(subredditName)}`;
+      return c.json<any>({
+        showToast: modNoteAdded 
+          ? `Mod note added. Opening dashboard for u/${username}...` 
+          : `Opening dashboard for u/${username}...`,
+        navigateTo: url,
+      });
+    } catch (err) {
+      console.error('ContextLens: failed to open dashboard', err);
+      return c.json<UiResponse>({
+        showToast: modNoteAdded 
+          ? `Mod note added, but failed to open dashboard.` 
+          : `Failed to open dashboard.`,
+      });
+    }
+  }
+
+  if (modNoteAdded) {
+    return c.json<UiResponse>({ showToast: `Mod note added for u/${username}.` });
   }
 
   return c.json<UiResponse>({ showToast: 'Dismissed.' });

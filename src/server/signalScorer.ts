@@ -133,11 +133,30 @@ function scoreProfileVisibility(payload: ContextPayload): ScoredSignal {
 }
 
 // ---------------------------------------------------------------------------
+// Signal 8 — Karma / activity
+// ---------------------------------------------------------------------------
+
+function scoreKarmaActivity(payload: ContextPayload): ScoredSignal {
+  const { totalKarma, recentCommentCount } = payload;
+  return {
+    id: 'karma_activity',
+    label: 'Karma / activity',
+    value: totalKarma < 10 && recentCommentCount === 0 
+      ? `${payload.totalKarma} karma, no recent comments`
+      : `${payload.totalKarma} karma`,
+    severity: payload.totalKarma < 10 && payload.recentCommentCount === 0 
+      ? 'watch' 
+      : 'clean',
+    icon: 'ti-chart-bar'
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
 
 /**
- * Score all 7 signals for a given ContextPayload.
+ * Score all signals for a given ContextPayload.
  * Returns signals sorted: concern first, then watch, then clean.
  */
 export function scoreSignals(payload: ContextPayload): ScoredSignal[] {
@@ -149,6 +168,7 @@ export function scoreSignals(payload: ContextPayload): ScoredSignal[] {
     scoreModNotes(payload),
     scoreToolboxNotes(payload),
     scoreProfileVisibility(payload),
+    scoreKarmaActivity(payload),
   ];
 
   const order: Record<SignalSeverity, number> = { concern: 0, watch: 1, clean: 2 };

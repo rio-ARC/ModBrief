@@ -31,10 +31,16 @@ const TEMPLATE_ESTABLISHED_CLEAN = (p: ContextPayload): NarrativeSummary => ({
   primarySignal: 'clean',
 });
 
-const TEMPLATE_LIGHT_ACTIVITY_CLEAN = (p: ContextPayload): NarrativeSummary => ({
-  text: `${p.username} has minimal recent activity in this subreddit but no moderation concerns. Account is ${p.accountAgeDays} days old. Nothing stands out.`,
-  primarySignal: 'clean',
-});
+const TEMPLATE_LIGHT_ACTIVITY_CLEAN = (p: ContextPayload): NarrativeSummary => {
+  let text = `${p.username} has minimal recent activity in this subreddit but no moderation concerns. Account is ${p.accountAgeDays} days old. Nothing stands out.`;
+  if (p.totalKarma < 10 && p.recentCommentCount === 0) {
+    text += " Account has minimal karma and no recent comments, which may indicate a dormant or newly active account.";
+  }
+  return {
+    text,
+    primarySignal: 'clean',
+  };
+};
 
 const TEMPLATE_NEW_ACCOUNT_WATCH = (p: ContextPayload): NarrativeSummary => ({
   text: `${p.username} created their account ${p.accountAgeDays} day${p.accountAgeDays !== 1 ? 's' : ''} ago, which is relatively new. No removals or mod notes yet. Might be worth keeping an eye on as they're still establishing a presence.`,

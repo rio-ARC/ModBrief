@@ -1,17 +1,37 @@
 export default function LoadingState() {
   return (
-    <div className="loading-shell" aria-label="Loading context" role="status">
-      <div className="spinner" />
-      <p className="loading-text">Loading user context…</p>
-      {/* Skeleton preview */}
-      <div style={{ width: '100%', maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div className="skeleton" style={{ height: 72 }} />
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="skeleton" style={{ height: 60 }} />
-          ))}
-        </div>
-      </div>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px',
+        width: '100%',
+        padding: '16px',
+        boxSizing: 'border-box',
+      }}
+    >
+      <style>
+        {`
+          @keyframes pulse {
+            0%, 100% {
+              opacity: 1;
+            }
+            50% {
+              opacity: 0.4;
+            }
+          }
+          .skeleton-pulse-bar {
+            height: 16px;
+            background-color: #30363d;
+            border-radius: 4px;
+            width: 100%;
+            animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+          }
+        `}
+      </style>
+      <div className="skeleton-pulse-bar" style={{ width: '80%' }} />
+      <div className="skeleton-pulse-bar" style={{ width: '100%' }} />
+      <div className="skeleton-pulse-bar" style={{ width: '60%' }} />
     </div>
   );
 }

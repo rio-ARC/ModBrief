@@ -1,213 +1,158 @@
-import { useEffect, useReducer } from 'react';
+import { useEffect, useState } from 'react';
 import type { ContextResponse } from '../shared/types';
 import LoadingState from './components/LoadingState';
-import EmptyState from './components/EmptyState';
 import SummaryPanel from './panels/SummaryPanel';
 import SignalGrid from './panels/SignalGrid';
 import HistoryTab from './panels/HistoryTab';
 import QuickActions from './panels/QuickActions';
 
-// ---------------------------------------------------------------------------
-// State machine
-// ---------------------------------------------------------------------------
-
-type Tab = 'summary' | 'signals' | 'history';
-
-type AppState =
-  | { status: 'loading' }
-  | { status: 'loaded'; data: ContextResponse; tab: Tab }
-  | { status: 'error'; message: string }
-  | { status: 'no-user' };
-
-type AppAction =
-  | { type: 'LOADED'; data: ContextResponse }
-  | { type: 'ERROR'; message: string }
-  | { type: 'NO_USER' }
-  | { type: 'SET_TAB'; tab: Tab };
-
-function reducer(state: AppState, action: AppAction): AppState {
-  switch (action.type) {
-    case 'LOADED':
-      return { status: 'loaded', data: action.data, tab: 'summary' };
-    case 'ERROR':
-      return { status: 'error', message: action.message };
-    case 'NO_USER':
-      return { status: 'no-user' };
-    case 'SET_TAB':
-      if (state.status !== 'loaded') return state;
-      return { ...state, tab: action.tab };
-    default:
-      return state;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// URL param extraction
-// Devvit passes context via query params when navigating to the custom post
-// ---------------------------------------------------------------------------
-
-function getQueryParam(key: string): string | null {
-  try {
-    return new URLSearchParams(window.location.search).get(key);
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// App root
-// ---------------------------------------------------------------------------
-
 export default function App() {
-  const [state, dispatch] = useReducer(reducer, { status: 'loading' });
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [tab, setTab] = useState<'summary' | 'signals' | 'history'>('summary');
+  const [data, setData] = useState<ContextResponse | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
-  const username = getQueryParam('username') ?? 'unknown';
-  const subredditName = getQueryParam('subreddit') ?? '';
-  const contentId = getQueryParam('contentId') ?? '';
+  const queryParams = new URLSearchParams(window.location.search);
+  const username = queryParams.get('username') || '';
+  const subredditName = queryParams.get('subreddit') || '';
+  const contentId = queryParams.get('contentId') || '';
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
+      if (!username) {
+        setStatus('error');
+        return;
+      }
+      setStatus('loading');
       try {
-        const params = new URLSearchParams({ username, subredditName, contentId });
-        const res = await fetch(`/api/context/${encodeURIComponent(username)}?${params}`);
-
+        const res = await fetch(`/api/context/${encodeURIComponent(username)}${window.location.search}`);
         if (!res.ok) {
-          if (res.status === 404) {
-            dispatch({ type: 'NO_USER' });
-          } else {
-            dispatch({ type: 'ERROR', message: `Server returned ${res.status}` });
-          }
+          if (!cancelled) setStatus('error');
           return;
         }
-
-        const data: ContextResponse = await res.json();
-        if (!cancelled) dispatch({ type: 'LOADED', data });
-      } catch (err) {
+        const responseData: ContextResponse = await res.json();
         if (!cancelled) {
-          dispatch({
-            type: 'ERROR',
-            message: err instanceof Error ? err.message : 'Network error',
-          });
+          setData(responseData);
+          setStatus('loaded');
         }
+      } catch (err) {
+        if (!cancelled) setStatus('error');
       }
     }
 
-    void load();
-    return () => { cancelled = true; };
-  }, [username, subredditName, contentId]);
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [username, retryCount]);
 
-  // --- Action handlers (POST to server) ---
-
-  async function handleAddNote(prefillText: string) {
-    const note = window.prompt(`Add a mod note for u/${username}:`, prefillText);
-    if (!note) return;
-    await fetch('/api/actions/add-note', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subredditName, username, note }),
-    });
+  if (status === 'loading') {
+    return <LoadingState />;
   }
 
-  async function handleRemove() {
-    if (!window.confirm(`Remove this content by u/${username}?`)) return;
-    await fetch('/api/actions/remove-content', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subredditName, contentId }),
-    });
-  }
-
-  async function handleBan() {
-    const reason = window.prompt(
-      `Ban u/${username} from r/${subredditName}?\n\nEnter reason (or Cancel):`,
+  if (status === 'error') {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100%',
+          gap: '16px',
+          color: '#e6edf3',
+          padding: '24px',
+          boxSizing: 'border-box',
+        }}
+      >
+        <p style={{ fontSize: '1.1rem', fontWeight: 500 }}>Failed to load context</p>
+        <button
+          onClick={() => setRetryCount((prev) => prev + 1)}
+          style={{
+            padding: '8px 16px',
+            backgroundColor: '#21262d',
+            border: '1px solid #30363d',
+            borderRadius: '6px',
+            color: '#58a6ff',
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+        >
+          Retry
+        </button>
+      </div>
     );
-    if (!reason) return;
-    await fetch('/api/actions/ban-user', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subredditName, username, reason }),
-    });
   }
-
-  function handleDismiss() {
-    // Signal to Devvit parent to close the WebView
-    // In a custom post this is a no-op; the user closes the tab
-    console.log('ContextLens: dismiss');
-  }
-
-  // --- Render ---
-
-  if (state.status === 'loading') return <LoadingState />;
-  if (state.status === 'error')   return <EmptyState type="error" message={state.message} />;
-  if (state.status === 'no-user') return <EmptyState type="no-user" />;
-
-  const { data, tab } = state;
-  const { payload, signals, summary } = data;
 
   return (
-    <div className="app-shell">
-      {/* Header */}
-      <header className="app-header">
-        <div className="app-header__top">
-          <div className="app-header__logo" aria-hidden="true">CL</div>
-          <span className="app-header__username" title={`u/${payload.username}`}>
-            u/{payload.username}
-          </span>
-          <span className="app-header__meta">
-            r/{subredditName || '—'}
-          </span>
-        </div>
-
-        {/* Tabs */}
-        <nav className="tabs" aria-label="Context sections">
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        position: 'relative',
+        backgroundColor: '#0d1117',
+      }}
+    >
+      {/* Tab bar at top */}
+      <div
+        style={{
+          display: 'flex',
+          borderBottom: '1px solid #30363d',
+          backgroundColor: '#161b22',
+        }}
+      >
+        {(['summary', 'signals', 'history'] as const).map((t) => (
           <button
-            id="tab-summary"
-            className={`tab-btn${tab === 'summary' ? ' active' : ''}`}
-            onClick={() => dispatch({ type: 'SET_TAB', tab: 'summary' })}
+            key={t}
+            onClick={() => setTab(t)}
+            style={{
+              flex: 1,
+              padding: '12px 16px',
+              backgroundColor: 'transparent',
+              border: 'none',
+              borderBottom: tab === t ? '2px solid #58a6ff' : '2px solid transparent',
+              color: tab === t ? '#58a6ff' : '#8b949e',
+              fontWeight: 600,
+              cursor: 'pointer',
+              textTransform: 'capitalize',
+            }}
           >
-            Summary
+            {t}
           </button>
-          <button
-            id="tab-signals"
-            className={`tab-btn${tab === 'signals' ? ' active' : ''}`}
-            onClick={() => dispatch({ type: 'SET_TAB', tab: 'signals' })}
-          >
-            Signals
-          </button>
-          <button
-            id="tab-history"
-            className={`tab-btn${tab === 'history' ? ' active' : ''}`}
-            onClick={() => dispatch({ type: 'SET_TAB', tab: 'history' })}
-          >
-            History
-          </button>
-        </nav>
-      </header>
+        ))}
+      </div>
 
-      {/* Scrollable body */}
-      <main className="app-content">
-        {tab === 'summary' && (
-          <SummaryPanel payload={payload} summary={summary} />
+      {/* Tab content area (scrollable) */}
+      <div
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          paddingBottom: '80px',
+        }}
+      >
+        {tab === 'summary' && data && (
+          <SummaryPanel payload={data.payload} summary={data.summary} />
         )}
-        {tab === 'signals' && (
-          <SignalGrid signals={signals} />
+        {tab === 'signals' && data && (
+          <SignalGrid signals={data.signals} />
         )}
-        {tab === 'history' && (
-          <HistoryTab payload={payload} />
+        {tab === 'history' && data && (
+          <HistoryTab events={data.payload.subredditRemovals} />
         )}
-      </main>
+      </div>
 
-      {/* Sticky action bar */}
-      <QuickActions
-        payload={payload}
-        summary={summary}
-        onAddNote={handleAddNote}
-        onRemove={handleRemove}
-        onBan={handleBan}
-        onDismiss={handleDismiss}
-      />
+      {/* QuickActions bar fixed to bottom (always visible) */}
+      {data && (
+        <QuickActions
+          username={username}
+          subredditName={subredditName}
+          contentId={contentId}
+          summaryText={data.summary.text}
+        />
+      )}
     </div>
   );
 }
