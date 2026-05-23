@@ -132,6 +132,10 @@ app.post('/internal/menu/view-context', async (c) => {
 
   const { username } = author;
 
+  // Persist username for the async form submission handler (context is not available there)
+  const userId = context.userId ?? 'unknown';
+  await redis.set('contextlens:pending:' + userId, username, { expiration: new Date(Date.now() + 300_000) });
+
   // Fetch context (may use cache)
   let response: ContextResponse;
   try {
@@ -201,33 +205,50 @@ app.post('/internal/menu/view-context', async (c) => {
   });
 });
 
-// Helper: get or create dashboard post URL
+// Helper: build a full Reddit URL from a Post object
+function postToUrl(post: { permalink: string; id: string }, subredditName: string): string {
+  const rel = post.permalink || `/r/${subredditName}/comments/${String(post.id).replace('t3_', '')}/`;
+  return `https://www.reddit.com${rel}`;
+}
+
+// Helper: get or create the shared dashboard custom post for this subreddit
 async function getOrCreateDashboardPostUrl(subredditName: string): Promise<string> {
   const cacheKey = `contextlens:dashboard_post:${subredditName}`;
-  let postId = await redis.get(cacheKey);
+  const cachedId = await redis.get(cacheKey);
 
-  if (postId) {
+  // 1. Try cached post ID first
+  if (cachedId) {
     try {
-      const post = await reddit.getPostById(postId as `t3_${string}`);
-      if (post) {
-        const permalink = post.permalink ?? `/r/${subredditName}/comments/${post.id.replace('t3_', '')}`;
-        return `https://www.reddit.com${permalink}`;
+      const post = await reddit.getPostById(cachedId as `t3_${string}`);
+      if (post && !post.removed) {
+        return postToUrl(post, subredditName);
       }
     } catch (err) {
-      console.warn(`ContextLens: failed to fetch cached dashboard post ${postId}, will recreate`, err);
+      console.warn('ContextLens: cached dashboard post unavailable, searching for existing...', err);
     }
   }
 
-  // Submit new custom post
+  // 2. Search for an existing ContextLens Dashboard post in the subreddit
+  try {
+    const listing = reddit.getNewPosts({ subredditName, limit: 25 });
+    const posts = await listing.get(25);
+    const existing = posts.find((p) => p.title === 'ContextLens Dashboard');
+    if (existing) {
+      await redis.set(cacheKey, existing.id);
+      return postToUrl(existing, subredditName);
+    }
+  } catch (err) {
+    console.warn('ContextLens: search for existing dashboard post failed, will create new', err);
+  }
+
+  // 3. Create a new custom post
   const post = await reddit.submitCustomPost({
     subredditName,
     title: 'ContextLens Dashboard',
     entry: 'default',
   });
-
   await redis.set(cacheKey, post.id);
-  const permalink = post.permalink ?? `/r/${subredditName}/comments/${post.id.replace('t3_', '')}`;
-  return `https://www.reddit.com${permalink}`;
+  return postToUrl(post, subredditName);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,13 +265,15 @@ app.post('/internal/form/context-submit', async (c) => {
   const { note, openDashboard } = body;
   const subredditName = context.subredditName ?? '';
 
-  const resolved = await resolveAuthor(context.postId, context.commentId);
-  const username = resolved?.username;
+  // Retrieve the target username stored by the menu handler
+  const userId = context.userId ?? 'unknown';
+  const username = await redis.get('contextlens:pending:' + userId);
 
   if (!username) {
-    return c.json<UiResponse>({ showToast: 'Missing username.' });
+    return c.json<UiResponse>({ showToast: 'Error: could not retrieve username. Please try again.' });
   }
 
+  // Add mod note if provided (do this first, then handle dashboard navigation)
   let modNoteAdded = false;
   if (note && note.trim()) {
     try {
@@ -265,22 +288,22 @@ app.post('/internal/form/context-submit', async (c) => {
     }
   }
 
-  if (openDashboard) {
+  // openDashboard may arrive as boolean true or string 'true' depending on Devvit version
+  const shouldOpenDashboard = openDashboard === true || (openDashboard as unknown) === 'true';
+
+  if (shouldOpenDashboard) {
     try {
       const dashboardUrl = await getOrCreateDashboardPostUrl(subredditName);
+      // Append username as query param so the WebView can read window.location.search
       const url = `${dashboardUrl}?username=${encodeURIComponent(username)}&subreddit=${encodeURIComponent(subredditName)}`;
-      return c.json<any>({
-        showToast: modNoteAdded 
-          ? `Mod note added. Opening dashboard for u/${username}...` 
-          : `Opening dashboard for u/${username}...`,
-        navigateTo: url,
-      });
+      // Return navigateTo ALONE — combining with showToast can suppress navigation in some clients
+      return c.json<any>({ navigateTo: url });
     } catch (err) {
       console.error('ContextLens: failed to open dashboard', err);
       return c.json<UiResponse>({
-        showToast: modNoteAdded 
-          ? `Mod note added, but failed to open dashboard.` 
-          : `Failed to open dashboard.`,
+        showToast: modNoteAdded
+          ? 'Mod note added, but failed to open dashboard. Please try again.'
+          : 'Failed to open dashboard. Please try again.',
       });
     }
   }
@@ -372,8 +395,21 @@ app.post('/internal/form/ban-user-submit', async (c) => {
 // ---------------------------------------------------------------------------
 
 app.get('/api/context/:username', async (c) => {
-  const username = c.req.param('username');
+  let username = c.req.param('username');
   const subredditName = c.req.query('subredditName') ?? context.subredditName ?? '';
+
+  // '__pending__' is sent by the WebView when no username is in the URL
+  // (Devvit's iFrame URL doesn't forward Reddit post URL query params).
+  // Resolve it from the Redis key the menu handler stored.
+  if (username === '__pending__') {
+    const userId = context.userId ?? '';
+    const stored = await redis.get('contextlens:pending:' + userId);
+    if (!stored) {
+      console.error('ContextLens: /api/context/__pending__ — no pending user in Redis for userId:', userId);
+      return c.json({ error: 'No pending user. Please re-open from the context menu.' }, 404);
+    }
+    username = stored;
+  }
 
   try {
     const response = await buildContextResponse(subredditName, username);

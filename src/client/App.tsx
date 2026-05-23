@@ -13,7 +13,10 @@ export default function App() {
   const [retryCount, setRetryCount] = useState(0);
 
   const queryParams = new URLSearchParams(window.location.search);
-  const username = queryParams.get('username') || '';
+  // When opened via navigateTo from a Devvit form, window.location.search is empty
+  // because Devvit serves the WebView iFrame from a CDN URL, not the Reddit post URL.
+  // Use '__pending__' so the server resolves the username from Redis.
+  const username = queryParams.get('username') || '__pending__';
   const subredditName = queryParams.get('subreddit') || '';
   const contentId = queryParams.get('contentId') || '';
 
@@ -21,10 +24,8 @@ export default function App() {
     let cancelled = false;
 
     async function load() {
-      if (!username) {
-        setStatus('error');
-        return;
-      }
+      // If no username at all and we're in __pending__ mode, server will resolve it.
+      // Only bail out if the fetch itself fails or server returns 404.
       setStatus('loading');
       try {
         const res = await fetch(`/api/context/${encodeURIComponent(username)}${window.location.search}`);
